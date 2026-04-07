@@ -242,9 +242,6 @@ ggplot(scores, aes(x = PC1, y = PC2, color = colData(se50)$cholesterol)) +
   scale_color_gradient(low = "blue", high = "red", name = "Cholesterol") +
   labs(title = "PCA – by cholesterol") +
   theme_bw()
-
-
-## IN THE ASSIGNMENT I SIMPLY COMBINED THE PLOTS USING THE GRIDEXTRA PACKAGE TO DISPLAY ALL GRAPHS TOGETHER (echo=FALSE to print only the plots)
 ```
 
 
