@@ -40,6 +40,9 @@ Classical Multidimensional Scaling (MDS) is applied on Euclidean distances and c
 | `gridExtra` | Multi-panel plot layouts |
 | `kableExtra` | Formatted tables in R Markdown |  
 
+# ## Data Availability
+The datasets used in this project are not publicly available as they are part of a university course assignment. 
+
 ## How to Run
 
 1. Clone this repository
