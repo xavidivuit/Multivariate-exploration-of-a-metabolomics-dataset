@@ -1,0 +1,318 @@
+---
+title: "Multivariate exploration of a metabolomics dataset"
+author: "Xavi Tarragó Claramunt"
+date: "2026-04-06"
+output: html_document
+---
+
+
+**1.1 Building the container and selecting samples**
+
+```{r}
+# Load libraries
+library(SummarizedExperiment)
+library(impute)
+library(ggplot2)
+library(kableExtra)
+library(gridExtra)
+
+# Read the expression/abundance matrix
+assay_mat   <- read.csv("assay.csv", row.names = 1, check.names = FALSE)
+
+# Read the sample metadata
+sample_meta <- read.csv("sample_metadata.csv",  row.names = 1, check.names = FALSE)
+
+# Read the metabolite metadata
+feat_meta   <- read.csv("feature_metadata.csv", row.names = 1, check.names = FALSE)
+
+# Convert the assay data frame to a numeric matrix, required for SummarizedExperiment
+assay_mat <- as.matrix(assay_mat)
+
+# File contents
+knitr::kable(data.frame(
+  File = c("assay.csv", "sample_metadata.csv", "feature_metadata.csv"),
+  Content = c("Metabolite abundance matrix (120 metabolites × 60 samples)",
+              "Clinical information for each sample (group, batch, sex, age, BMI, cholesterol)",
+              "Information for each metabolite (name, biochemical class, analytical platform)")))
+```
+
+```{r}
+# Quick overview of the data
+
+# Number of samples per group (Case / Control)
+table(sample_meta$group)
+
+# Descriptive statistics for continuous clinical variables
+summary(sample_meta[, c("age", "bmi", "cholesterol")])
+
+# Number of metabolites per biochemical class
+table(feat_meta$class)
+
+# Number of metabolites per analytical platform
+table(feat_meta$platform)
+```
+
+```{r}
+# Build the SummarizedExperiment integrating the three components:
+#   - assays:   the numeric data matrix (metabolite abundances)
+#   - colData:  sample metadata (group, age, sex...)
+#   - rowData:  metabolite metadata (name, class, platform)
+se <- SummarizedExperiment(
+  assays  = list(counts = assay_mat),
+  colData = DataFrame(sample_meta),
+  rowData = DataFrame(feat_meta)
+)
+
+# Print a summary of the object to verify it was built correctly
+se
+```
+
+```{r}
+# Verify the number of samples per group within the SummarizedExperiment
+table(colData(se)$group)
+```
+
+```{r}
+# Set the seed to ensure reproducibility of the random sampling
+set.seed(18)
+
+# Get the sample identifiers for each group
+cases    <- rownames(colData(se))[colData(se)$group == "Case"]
+controls <- rownames(colData(se))[colData(se)$group == "Control"]
+
+# Randomly select 25 samples from each group without replacement (the same sample cannot be selected twice)
+# and sort them alphabetically for readability
+sel_cases    <- sort(sample(cases,    25, replace = FALSE)) 
+sel_controls <- sort(sample(controls, 25, replace = FALSE))
+
+knitr::kable(
+  data.frame(Cases = sel_cases, Controls = sel_controls)
+)
+```
+
+```{r}
+# Combine the identifiers from both groups into a single vector
+selected_samples <- c(sel_cases, sel_controls)
+
+# Create the subset by filtering the columns of se corresponding to the 50 samples
+se50 <- se[, selected_samples]
+
+# Print a summary of the new object to confirm the dimensions (120 metabolites x 50 samples)
+se50
+
+# Verify that the group balance is as expected (25 Cases + 25 Controls)
+table(colData(se50)$group)
+```
+
+**1.2 Data preparation**
+
+```{r}
+
+# Calculate the % of NAs per feature in the assay
+pct_na <- rowMeans(is.na(assay(se50))) * 100
+
+# Keep only metabolites with less than 20% NAs as specified in the assignment
+se50 <- se50[pct_na <= 20, ]
+
+cat("Metabolites removed:", sum(pct_na > 20), "\n")
+cat("Remaining metabolites:",   nrow(se50), "\n")
+```
+
+```{r}
+# There are still NAs, so we use impute from Bioconductor to handle them
+library(impute)
+
+# For each NA value, the algorithm finds the 5 metabolites (rows) with the most similar
+# abundance pattern to the one with the missing value, and computes their mean in that
+# sample to estimate the missing entry
+
+# Impute remaining NAs with KNN (k=5 neighbours by default)
+mat_imp <- impute.knn(assay(se50), k = 5)$data # $data extracts only the imputed matrix from the result
+
+# Replace the original matrix inside the SummarizedExperiment with the imputed one
+assay(se50) <- mat_imp
+
+cat("Remaining NAs after imputation:", sum(is.na(assay(se50))), "\n")
+```
+
+
+```{r}
+# Plot a boxplot to visualize the distribution of each sample
+# and detect samples with distributions very different from the rest
+# Apply log2 to stabilize variance and approximate normality
+assay(se50) <- log2(assay(se50))
+
+boxplot(assay(se50), las = 2, cex.axis = 0.6,
+        main = "Distribution per sample",
+        ylab = "log2(Abundance)")
+
+```
+
+
+```{r}
+# Center and scale by metabolite to make them comparable, since metabolites have very different abundance ranges
+# The first t(assay(se50)) transposes the matrix so that metabolites are columns for scale()
+# The second t(...) transposes back to the original orientation
+mat_scaled <- t(scale(t(assay(se50))))
+
+# Store the scaled matrix as a second assay called "scaled"
+assay(se50, "scaled") <- mat_scaled
+```
+
+**1.3 PCA analysis**
+
+```{r}
+# Transpose because prcomp expects samples in rows and metabolites in columns
+pca <- prcomp(t(assay(se50, "scaled")), center = FALSE, scale. = FALSE)
+
+# Variance explained by each component
+var_exp <- summary(pca)$importance[2, ]
+var_cum <- summary(pca)$importance[3, ]  
+
+knitr::kable(
+  data.frame(
+    Component = paste0("PC", 1:10),
+    Variance_explained = round(unname(var_exp[1:10]) * 100, 1),
+    Cumulative_variance = round(unname(var_cum[1:10]) * 100, 1)
+  ))
+```
+
+
+```{r}
+# Visualize how many components are worth retaining
+plot(var_exp[1:10] * 100, type = "b", pch = 19,
+     xlab = "Component", ylab = "% variance explained",
+     main = "Scree plot")
+```
+
+
+```{r}
+# Plot the PCA
+library(ggplot2)
+
+# Extract the coordinates of each sample in PC1 and PC2
+# pca$x contains the position of each sample in PCA space
+scores <- as.data.frame(pca$x[, 1:2])
+
+# Add the group variable to colour the points
+scores$group <- colData(se50)$group
+
+# Plot each sample as a point coloured by group
+ggplot(scores, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3) +
+  labs(title = "PCA - by group") +
+  theme_bw()
+```
+
+
+```{r}
+# Explore whether other variables explain the observed structure
+scores$batch <- colData(se50)$batch
+scores$sex   <- colData(se50)$sex
+
+# By batch
+ggplot(scores, aes(x = PC1, y = PC2, color = batch)) +
+  geom_point(size = 3) +
+  labs(title = "PCA – by batch") +
+  theme_bw()
+
+# By sex
+ggplot(scores, aes(x = PC1, y = PC2, color = sex)) +
+  geom_point(size = 3) +
+  labs(title = "PCA – by sex") +
+  theme_bw()
+
+# By age (continuous variable)
+ggplot(scores, aes(x = PC1, y = PC2, color = colData(se50)$age)) +
+  geom_point(size = 3) +
+  scale_color_gradient(low = "blue", high = "red", name = "Age") +
+  labs(title = "PCA – by age") +
+  theme_bw()
+
+# By BMI (continuous variable)
+ggplot(scores, aes(x = PC1, y = PC2, color = colData(se50)$bmi)) +
+  geom_point(size = 3) +
+  scale_color_gradient(low = "blue", high = "red", name = "BMI") +
+  labs(title = "PCA – by BMI") +
+  theme_bw()
+
+# By cholesterol (continuous variable)
+ggplot(scores, aes(x = PC1, y = PC2, color = colData(se50)$cholesterol)) +
+  geom_point(size = 3) +
+  scale_color_gradient(low = "blue", high = "red", name = "Cholesterol") +
+  labs(title = "PCA – by cholesterol") +
+  theme_bw()
+
+
+## IN THE ASSIGNMENT I SIMPLY COMBINED THE PLOTS USING THE GRIDEXTRA PACKAGE TO DISPLAY ALL GRAPHS TOGETHER (echo=FALSE to print only the plots)
+```
+
+
+```{r}
+# Extract the loadings for PC1 and PC2
+loadings <- as.data.frame(pca$rotation[, 1:2])
+loadings$metabolite <- rowData(se50)$metabolite_name
+
+# Top 10 contributors to PC1
+top_pc1 <- loadings[order(abs(loadings$PC1), decreasing = TRUE), ][1:10, ]
+# Top 10 contributors to PC2
+top_pc2 <- loadings[order(abs(loadings$PC2), decreasing = TRUE), ][1:10, ]
+
+knitr::kable(
+  data.frame(
+    Metabolite_PC1 = top_pc1$metabolite,
+    Loading_PC1    = round(top_pc1$PC1, 4),
+    Metabolite_PC2 = top_pc2$metabolite,
+    Loading_PC2    = round(top_pc2$PC2, 4)
+  ))
+```
+
+**1.4 Comparison with other methods (MDS)**
+
+```{r}
+# Compute the distances between all pairs of samples
+# t() because dist() expects samples in rows
+dist_mat <- dist(t(assay(se50, "scaled")))
+
+# Apply MDS to project the samples into 2 dimensions (k=2)
+# preserving the original distances as closely as possible
+mds <- cmdscale(dist_mat, k = 2)
+
+# Create a data frame with the coordinates and group for each sample
+mds_df <- data.frame(
+  Dim1  = mds[, 1],
+  Dim2  = mds[, 2],
+  group = colData(se50)$group
+)
+
+# Plot the samples in 2D coloured by group
+ggplot(mds_df, aes(x = Dim1, y = Dim2, color = group)) +
+  geom_point(size = 3) +
+  labs(title = "MDS", x = "Dimension 1", y = "Dimension 2") +
+  theme_bw()
+```
+
+
+```{r}
+# Add a column indicating the method to each data frame
+scores$method  <- "PCA"
+mds_df$method  <- "MDS"
+
+# Rename the columns in scores to match mds_df
+# (scores has PC1/PC2 and mds_df has Dim1/Dim2)
+colnames(scores)[1:2] <- c("Dim1", "Dim2")
+
+# Combine both data frames by stacking their rows
+all_df <- rbind(
+  scores[, c("Dim1", "Dim2", "group", "method")],
+  mds_df[, c("Dim1", "Dim2", "group", "method")]
+)
+
+# Plot both methods in the same figure but in separate panels
+# scales="free" because PCA and MDS have different scales and comparing them directly makes no sense
+ggplot(all_df, aes(x = Dim1, y = Dim2, color = group)) +
+  geom_point(size = 3) +
+  facet_wrap(~ method, scales = "free") +
+  labs(title = "PCA vs MDS") +
+  theme_bw()
+```
