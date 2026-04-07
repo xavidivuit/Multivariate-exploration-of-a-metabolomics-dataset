@@ -1,5 +1,3 @@
-# Multivariate-exploration-of-a-metabolomics-dataset
-
 # Multivariate Exploration of a Metabolomics Dataset
 
 An R-based project for multivariate analysis of a metabolomics dataset using `SummarizedExperiment`, dimensionality reduction (PCA and MDS), and exploratory data visualization.
